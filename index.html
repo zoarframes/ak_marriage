@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ZOAR Frames AR</title>
+  <style>
+    body { margin: 0; background: #000; }
+    #container { width: 100vw; height: 100vh; position: relative; overflow: hidden; }
+
+    /* ================= START SCREEN ================= */
+    #splash {
+      position: fixed; inset: 0; z-index: 20;
+      background: #000;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      transition: opacity 0.6s ease, visibility 0s 0s;
+      overflow: hidden;
+    }
+    #splash.hide {
+      opacity: 0; pointer-events: none; visibility: hidden;
+      transition: opacity 0.6s ease, visibility 0s 0.6s;   /* fade out aana apram hidden */
+    }
+
+    /* Full screen gif background (center la maximize) */
+    #bgGif {
+      position: absolute; inset: 0;
+      overflow: hidden; pointer-events: none;
+    }
+    #bgGif::after {
+      content: ""; position: absolute; top: 0; left: 0;
+      width: 118%; height: 118%;   /* gif ah konjam perusa vachi keela-valathu corner (watermark) screen ku veliya thallum */
+      background: url('sparkle.gif') center / cover no-repeat;
+    }
+
+    /* Logo */
+    #logo {
+      position: relative; z-index: 1;
+      width: min(70vw, 340px); height: auto; display: block;
+    }
+    .logoText {
+      position: relative; z-index: 1;
+      color: #d9ad63; text-align: center;
+      font-family: Georgia, 'Times New Roman', serif;
+      font-size: 54px; letter-spacing: 10px; line-height: 1;
+    }
+    .logoText small { display: block; margin-top: 10px; font-size: 16px; letter-spacing: 8px; }
+
+    /* Gold button */
+    #startBtn {
+      position: relative; z-index: 1;
+      margin-top: 16vh;
+      padding: 14px 34px; font-size: 20px; font-weight: 600;
+      border: none; border-radius: 12px;
+      color: #1c1306;
+      background: linear-gradient(180deg, #ebc47e, #cc9d57);
+      box-shadow: 0 0 22px rgba(224, 178, 100, 0.35);
+    }
+    #startBtn:disabled { opacity: 0.7; }
+
+    /* ================= BACK + PLAY/PAUSE + RESTART ================= */
+    #controls {
+      position: fixed; z-index: 10;
+      left: 50%; transform: translateX(-50%);
+      bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+      display: none; gap: 10px;
+    }
+    #controls button {
+      padding: 12px 20px; font-size: 16px;
+      border: none; border-radius: 999px;
+      background: rgba(0, 0, 0, 0.65); color: #fff;
+    }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.150.1/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.150.1/examples/jsm/",
+      "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
+    }
+  }
+  </script>
+</head>
+
+<body>
+  <div id="container"></div>
+
+  <!-- START SCREEN -->
+  <div id="splash">
+    <div id="bgGif"></div>
+
+    <img id="logo" src="logo.png" alt="ZOAR FRAMES"
+         onerror="this.outerHTML='<div class=&quot;logoText&quot;>ZOAR<small>FRAMES</small></div>'">
+
+    <button id="startBtn">Tap to Scan</button>
+  </div>
+
+  <!-- control buttons -->
+  <div id="controls">
+    <button id="backBtn">Back</button>
+    <button id="playPauseBtn">Pause</button>
+    <button id="restartBtn">Restart</button>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { MindARThree } from 'mindar-image-three';
+
+    // ---- Settings ----
+    const IMG_RATIO = 0.6615;   // unga target image: height / width
+                                // square = 1, 1920x1080 = 0.5625, 1080x1920 = 1.7778
+
+    // ---- Video element ----
+    const video = document.createElement('video');
+    video.src = './video.mp4';
+    video.loop = true;
+    video.playsInline = true;
+    video.setAttribute('playsinline', '');
+    video.preload = 'auto';
+
+    // ---- Elements ----
+    const startBtn = document.querySelector('#startBtn');
+    const backBtn = document.querySelector('#backBtn');
+    const playPauseBtn = document.querySelector('#playPauseBtn');
+    const restartBtn = document.querySelector('#restartBtn');
+    const splash = document.querySelector('#splash');
+    const controls = document.querySelector('#controls');
+    const container = document.querySelector('#container');
+
+    // ---- Play / Pause / Restart logic ----
+    let targetVisible = false;   // image ippo theriyudha
+    let userPaused = false;      // user Pause click pannirukkaara
+    let current = null;          // ippo run aagura AR session (Back click la stop panna)
+
+    const refresh = () => {
+      if (targetVisible && !userPaused) video.play();
+      else video.pause();
+      playPauseBtn.textContent = userPaused ? 'Play' : 'Pause';
+    };
+
+    playPauseBtn.addEventListener('click', () => {
+      userPaused = !userPaused;
+      refresh();
+    });
+
+    restartBtn.addEventListener('click', () => {
+      video.currentTime = 0;
+      userPaused = false;
+      refresh();
+    });
+
+    // ---- MindAR UI (scanner frame / loading) body la add aagum, adha remove panna helper ----
+    const removeMindarUI = () => {
+      document
+        .querySelectorAll('.mindar-ui-overlay, .mindar-ui-scanning, .mindar-ui-loading, .mindar-ui-compatibility')
+        .forEach((el) => el.remove());
+    };
+
+    const start = async () => {
+      // Pazhaya session UI irundha munnadiye clean pannidrom (stack aagaadhu)
+      removeMindarUI();
+
+      const mindarThree = new MindARThree({
+        container: container,
+        imageTargetSrc: './targets.mind',
+        filterMinCF: 0.001,     // default value (munnadi 0.0001)
+        filterBeta: 1000,       // default value (munnadi 10), plane udane follow pannum
+        warmupTolerance: 5,
+        missTolerance: 5,
+        uiLoading: 'no',        // MindAR loading spinner venaam (namba "Loading..." button irukku)
+        uiScanning: 'yes',      // scanner frame venum
+        uiError: 'yes'
+      });
+      const { renderer, scene, camera } = mindarThree;
+      current = { mindarThree, renderer };
+
+      // ---- Video texture ----
+      const videoTexture = new THREE.VideoTexture(video);
+      videoTexture.encoding = THREE.sRGBEncoding;
+      videoTexture.flipY = false;   // GLB plane ku idhu sari. Video thalai keela theriyudha na true pannunga
+      const videoMaterial = new THREE.MeshBasicMaterial({
+        map: videoTexture,
+        side: THREE.DoubleSide
+      });
+
+      // ---- Plane GLB load ----
+      const gltf = await new GLTFLoader().loadAsync('./model.glb');
+      const plane = gltf.scene;
+
+      // Ella mesh kum video material podrom
+      plane.traverse((o) => {
+        if (o.isMesh) o.material = videoMaterial;
+      });
+
+      // Plane oda orientation auto detect (sinna dimension = plane oda normal)
+      const raw = new THREE.Box3().setFromObject(plane).getSize(new THREE.Vector3());
+      if (raw.y <= raw.x && raw.y <= raw.z) {
+        plane.rotation.x = Math.PI / 2;    // Blender plane (flat, Y normal)
+      } else if (raw.x <= raw.y && raw.x <= raw.z) {
+        plane.rotation.y = Math.PI / 2;    // X normal
+      }                                    // Z normal na rotation vendaam
+
+      // Pivot group: center + exact size fit
+      const pivot = new THREE.Group();
+      pivot.add(plane);
+      pivot.updateMatrixWorld(true);
+
+      const box = new THREE.Box3().setFromObject(pivot);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+
+      plane.position.sub(center);          // image center la vaikkum
+      pivot.scale.set(1 / size.x, IMG_RATIO / size.y, 1);   // width = 1, height = IMG_RATIO
+      pivot.position.z = 0.001;            // image mela konjam mela (flicker varaadhu)
+
+      // ---- Image target ----
+      const anchor = mindarThree.addAnchor(0);
+      anchor.group.add(pivot);
+
+      anchor.onTargetFound = () => {
+        targetVisible = true;
+        refresh();
+      };
+      anchor.onTargetLost = () => {
+        targetVisible = false;
+        refresh();
+      };
+
+      await mindarThree.start();
+
+      // AR start aana apram buttons kaattum
+      controls.style.display = 'flex';
+
+      renderer.setAnimationLoop(() => {
+        renderer.render(scene, camera);
+      });
+    };
+
+    // ---- Back: scan page -> home page (session ellam reset) ----
+    const goHome = () => {
+      // 1) Video reset
+      video.pause();
+      video.currentTime = 0;
+
+      // 2) State reset (puthu session fresh ah start aaga)
+      targetVisible = false;
+      userPaused = false;
+      playPauseBtn.textContent = 'Pause';
+
+      // 3) Camera + AR stop
+      if (current) {
+        try { current.mindarThree.stop(); } catch (e) { console.warn(e); }
+        try { current.renderer.setAnimationLoop(null); current.renderer.dispose(); } catch (e) {}
+        current = null;
+      }
+
+      // 4) Camera stream fully release (camera indicator poganum)
+      document.querySelectorAll('video').forEach((v) => {
+        if (v !== video && v.srcObject) {
+          try { v.srcObject.getTracks().forEach((t) => t.stop()); } catch (e) {}
+          v.srcObject = null;
+        }
+      });
+
+      // 5) Pazhaya canvas / camera video + MindAR scanner UI ellam clean
+      container.innerHTML = '';
+      removeMindarUI();
+
+      // 6) Home page thirumba kaattum
+      controls.style.display = 'none';
+      startBtn.disabled = false;
+      startBtn.textContent = 'Tap to Scan';
+      splash.classList.remove('hide');
+    };
+
+    backBtn.addEventListener('click', goHome);
+
+    // ---- Tap to Scan (mobile la video unlock ku must) ----
+    startBtn.addEventListener('click', async () => {
+      startBtn.disabled = true;
+      startBtn.textContent = 'Loading...';
+
+      // Video unlock: click kulla, await ku munnadi irukkanum
+      video.play().then(() => video.pause()).catch(() => {});
+
+      try {
+        await start();                       // camera + model ready aana apram
+        splash.classList.add('hide');        // home page fade out
+      } catch (e) {
+        console.error(e);
+        goHome();
+        alert('Camera access Allow pannitu marubadiyum try pannunga');
+      }
+    });
+  </script>
+</body>
+</html>
